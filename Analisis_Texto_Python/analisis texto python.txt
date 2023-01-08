@@ -1,0 +1,381 @@
+
+#===================================================================================================
+# Analisis no supervisado (k-means) de palabras en documento y ver frecuencia de palabras
+#===================================================================================================
+
+# esto lo hace un package llamado 'gensim' de nlp (por investigar mas adelante)
+
+# lectura del archivo 
+df_texto = pd.read_excel('comentarios.xlsx')
+df_texto
+
+# quedarse solo con aquellos que tengan largo mayor a n 
+df_texto['largo_texto']=df_texto['review'].apply(lambda x: len(str(x)))
+df_texto2 = df_texto[df_texto['largo_texto']>20].reset_index()
+df_texto2
+
+
+# importar modelo para tokenizar 
+nlp = spacy.load('es_core_news_sm')
+
+
+# obtener representacion vectorial
+doc_vectors =[]
+for t in df_texto2['review']:
+  doc = nlp(t)
+  doc_vectors.append(doc.vector)
+  
+doc_vectors 
+
+# crear tabla con representacion vectorial de cada frase
+df_texto3 = pd.concat([
+  df_texto2,
+  pd.DataFrame(
+    doc_vectors,
+    columns=['V'+str(i) for i in range(1,1+len(doc_vectors[0]))]
+    )
+],axis=1)
+
+df_texto3
+
+
+# . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+# aplicar PCA
+
+pca = PCA(n_components=3)
+data_pca = pca.fit_transform(df_texto3[['V'+str(i) for i in range(1,1+len(doc_vectors[0]))]])
+data_pca
+
+# revisar varianza explicada 
+pca.explained_variance_
+pca.explained_variance_ratio_
+pca.explained_variance_ratio_.sum()
+
+# crear df con dato de PCA 
+df_texto4 = pd.concat([
+  df_texto3,
+  pd.DataFrame(
+    data_pca,
+    columns = ['PCA'+str(i) for i in range(1,1+len(data_pca[0]))]
+    )
+  ],axis=1)
+
+df_texto4
+
+
+
+# . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+# aplicar Kmeans
+
+var_x = ['V'+str(i) for i in range(1,1+len(doc_vectors[0]))]
+var_x
+
+# se puede hacer antes grafico del codo para seleccionar mejor k (hecho mas adelante)
+
+# quedarse con un n de grupos a categorizar y asignar a base 
+km = KMeans(n_clusters=8,max_iter=200,n_init=10)
+km.fit(df_texto4[var_x])
+km.labels_
+
+df_texto4['kmeans']=[str(x+1) for x in km.labels_]
+df_texto4
+
+
+# . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+# graficar Kmeans
+
+# construir tabla de centroides en valores de PCA
+df_texto4_agg = df_texto4.groupby(['kmeans']).agg( 
+    N_casos = pd.NamedAgg(column = 'kmeans', aggfunc = len),
+    PCA1 = pd.NamedAgg(column = 'PCA1', aggfunc = np.mean),
+    PCA2 = pd.NamedAgg(column = 'PCA2', aggfunc = np.mean),
+    PCA3 = pd.NamedAgg(column = 'PCA3', aggfunc = np.mean),
+)
+df_texto4_agg.reset_index(level=df_texto4_agg.index.names, inplace=True) # pasar indices a columnas
+df_texto4_agg
+
+# regular tamaño en grafico segun cantidad de casos
+df_texto4_agg['size']=df_texto4_agg['N_casos'].apply(
+  lambda x: np.interp(x, [min(df_texto4_agg['N_casos']),max(df_texto4_agg['N_casos'])], [10,30])
+)
+df_texto4_agg
+
+# grafico en 2D
+fig = px.scatter(
+  df_texto4_agg, 
+  x='PCA1', 
+  y='PCA2', 
+  color='kmeans',
+  size='size',
+  text='kmeans'
+  )
+
+fig.update_layout(
+    title='cluster de documentos segun vectorizacion de tokens',
+    xaxis_title='PCA1 ('+str(round(100*pca.explained_variance_ratio_[0],1))+')',
+    yaxis_title='PCA2 ('+str(round(100*pca.explained_variance_ratio_[1],1))+')'
+    )
+
+fig.show()
+
+
+
+# grafico en 3D 
+fig = px.scatter_3d(
+  df_texto4_agg, 
+  x='PCA1', 
+  y='PCA2', 
+  z='PCA3',
+  color='kmeans',
+  size='size',
+  text='kmeans'
+  )
+
+fig.update_layout(scene = dict(
+    xaxis_title='PCA1 ('+str(round(100*pca.explained_variance_ratio_[0],1))+')',
+    yaxis_title='PCA2 ('+str(round(100*pca.explained_variance_ratio_[1],1))+')',
+    zaxis_title='PCA3 ('+str(round(100*pca.explained_variance_ratio_[2],1))+')'
+    ))
+
+fig.show()
+
+
+# . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+# revisar frecuencia de palabras en cluster especifico 
+
+# seleccionar un cluster de ejemplo 
+cluster_ejemplo = '2'
+
+# quedarse solo con palabras de ese cluster
+df_cluster = df_texto4.loc[df_texto4['kmeans']==cluster_ejemplo,'review'].reset_index(drop=True)
+df_cluster
+
+
+# crear objeto de vectorizer
+vectorizer = CountVectorizer(
+  lowercase=True,
+  preprocessor=lambda x: x.lower().replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u'),
+  stop_words=stop_words_es,
+  token_pattern='[^\W\d_]+', # regex para quitar numeros
+  strip_accents=None,
+  max_df=1.0,
+  max_features=None,
+  ngram_range=(1, 2), # considerar terminos de una palabra o dos palabras
+  binary=False
+  )
+
+
+# ajustar vectorizer
+vectorizer.fit(df_cluster)
+
+# crear matriz de palabras
+matriz_palabras = vectorizer.transform(df_cluster)
+matriz_palabras2 = pd.DataFrame(
+  matriz_palabras.toarray(),
+  columns = vectorizer.get_feature_names()
+)
+matriz_palabras2
+
+# obtener conteo de palabras 
+conteo_palabras = pd.DataFrame({
+  'termino': vectorizer.get_feature_names(),
+  'frecuencia': matriz_palabras.toarray().sum(axis=0)
+})
+conteo_palabras = conteo_palabras.sort_values('frecuencia', ascending=True)
+conteo_palabras
+
+# grafico de barras de frecuencia de palabras 
+
+fig = px.bar(
+  conteo_palabras.tail(10),
+  x='frecuencia',
+  y='termino'  
+)
+fig.show()
+
+
+# nube de palabras
+plt.figure(figsize=(12,12))
+            
+wordcloud = WordCloud(
+width=800, 
+height=400,
+background_color='salmon', 
+colormap='Pastel1',
+max_words=50
+).generate_from_frequencies(
+    dict(zip(conteo_palabras['termino'],conteo_palabras['frecuencia']))
+    )
+
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis('off')
+plt.figure()
+plt.show()
+
+
+
+# . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+# revisar frecuencia de palabras en todos los clusters (subplots)
+
+
+# identificar cantidad de clusters
+N_clusters = len(df_texto4['kmeans'].unique())
+N_clusters
+
+# determinar cantidad de filas y columnas 
+n_cols = 4 
+n_fils = int(np.ceil(N_clusters/n_cols))
+
+
+# crear objeto de vectorizer
+vectorizer = CountVectorizer(
+  lowercase=True,
+  preprocessor=lambda x: x.lower().replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u'),
+  stop_words=stop_words_es,
+  token_pattern='[^\W\d_]+', # regex para quitar numeros
+  strip_accents=None,
+  max_df=1.0,
+  max_features=None,
+  ngram_range=(1, 2), # considerar terminos de una palabra o dos palabras
+  binary=False
+  )
+
+
+# obtener lista de clusters
+lista_clusters = sorted(list(df_texto4['kmeans'].unique()))
+lista_clusters
+
+# rescatar tamaño de cada cluster
+size_clusters = [len(df_texto4[df_texto4['kmeans']==k]) for k in lista_clusters]
+size_clusters
+
+
+# crear objeto de subplots 
+fig = make_subplots(
+  rows=n_fils, 
+  cols=n_cols,
+  shared_xaxes=False,
+  shared_yaxes=False,
+  vertical_spacing=0.1,
+  horizontal_spacing=0.2,
+  subplot_titles=['C: '+str(a)+' ('+str(b)+')' for a,b in zip(lista_clusters,size_clusters)]
+  )
+
+
+# recorrer cantidad de clusters agregando info al subplot 
+for i in range(len(lista_clusters)):
+  
+  # rescatar valores de cluster, fila y columna 
+  k = lista_clusters[i]
+  f = int(np.floor((i)/n_cols))+1
+  c = (i % n_cols)+1
+  
+  # obtener frecuencia de palabras de grupo mejor de cluster 
+  df_cluster = df_texto4.loc[df_texto4['kmeans']==k,'review'].reset_index(drop=True)
+  vectorizer.fit(df_cluster)
+
+  matriz_palabras = vectorizer.transform(df_cluster)
+
+  conteo_palabras = pd.DataFrame({
+    'termino': vectorizer.get_feature_names(),
+    'frecuencia': matriz_palabras.toarray().sum(axis=0)
+  })
+  conteo_palabras = conteo_palabras.sort_values('frecuencia', ascending=True)
+  conteo_palabras = conteo_palabras.tail(10)
+  
+  # agregar grafico 
+  fig.add_trace(go.Bar(
+    x=conteo_palabras['frecuencia'], 
+    y=conteo_palabras['termino'],
+    orientation='h',
+    showlegend=False
+    ),row=f, col=c)
+  
+
+# mostrar grafico
+fig.update_layout(height=600, width=800)
+fig.show()
+
+
+# . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+# revisar frecuencia de palabras en todos los clusters (nube)
+
+
+# identificar cantidad de clusters
+N_clusters = len(df_texto4['kmeans'].unique())
+N_clusters
+
+# determinar cantidad de filas y columnas 
+n_cols = 4 
+n_fils = int(np.ceil(N_clusters/n_cols))
+
+
+# crear objeto de vectorizer
+vectorizer = CountVectorizer(
+  lowercase=True,
+  preprocessor=lambda x: x.lower().replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u'),
+  stop_words=stop_words_es,
+  token_pattern='[^\W\d_]+', # regex para quitar numeros
+  strip_accents=None,
+  max_df=1.0,
+  max_features=None,
+  ngram_range=(1, 2), # considerar terminos de una palabra o dos palabras
+  binary=False
+  )
+
+
+# obtener lista de clusters
+lista_clusters = sorted(list(df_texto4['kmeans'].unique()))
+lista_clusters
+
+# rescatar tamaño de cada cluster
+size_clusters = [len(df_texto4[df_texto4['kmeans']==k]) for k in lista_clusters]
+size_clusters
+
+# crear lista de titulos para clusters
+titulos_clusters = ['C: '+str(a)+' ('+str(b)+')' for a,b in zip(lista_clusters,size_clusters)]
+titulos_clusters
+
+
+# crear objeto grafico 
+plt.figure()
+plt.subplots(nrows=n_fils,ncols=n_cols,figsize=(25,25))
+
+for i in range(len(lista_clusters)):
+  
+  # rescatar valores de cluster, fila y columna 
+  k = lista_clusters[i]
+  f = int(np.floor((i)/n_cols))+1
+  c = (i % n_cols)+1
+      
+  # obtener frecuencia de palabras de grupo mejor de cluster 
+  df_cluster = df_texto4.loc[df_texto4['kmeans']==k,'review'].reset_index(drop=True)
+  vectorizer.fit(df_cluster)
+
+  matriz_palabras = vectorizer.transform(df_cluster)
+
+  conteo_palabras = pd.DataFrame({
+    'termino': vectorizer.get_feature_names(),
+    'frecuencia': matriz_palabras.toarray().sum(axis=0)
+    })
+      
+  # setear titulos 
+  plt.subplot(1,len(lista_clusters),i+1).set_title(titulos_clusters[i])
+  plt.plot()
+  
+  # generar nube de palabras 
+  wordcloud = WordCloud(
+  width=800, 
+  height=400,
+  background_color='salmon', 
+  colormap='Pastel1',
+  max_words=50
+  ).generate_from_frequencies(
+    dict(zip(conteo_palabras['termino'],conteo_palabras['frecuencia']))
+    )
+    
+  plt.imshow(wordcloud, interpolation='bilinear')
+  plt.axis('off')
+
+# mostrar resultados 
+plt.show()
